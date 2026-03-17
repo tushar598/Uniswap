@@ -840,7 +840,9 @@ const Dashboard = () => {
         <nav className="flex items-center justify-between py-6 mb-2">
           <div className="flex items-center gap-2.5">
             <div className="w-8 h-8 rounded-lg flex items-center justify-center text-black font-black"
-              style={{ background:'linear-gradient(135deg,#00D4FF,#7B2FBE)', fontSize:14 }}>⬡</div>
+              style={{ background:'linear-gradient(135deg,#00D4FF,#7B2FBE)', fontSize:14 }}>
+                <img src="/web3_icon.png" className='p-1' alt="icon" />
+              </div>
             <span className="font-black text-lg tracking-widest"
               style={{ fontFamily:"'Orbitron',sans-serif", background:'linear-gradient(90deg,#00D4FF,#7B2FBE)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>
               UniSwap
