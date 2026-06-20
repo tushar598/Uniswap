@@ -52,11 +52,25 @@ Response: {"action":"convert","fromToken":null,"toToken":"USDC","amount":null,"i
  * @param {string} apiKey - Google Gemini API key
  * @returns {Promise<Object>} Parsed intent object
  */
+// Track if the API key has failed so we skip retrying a broken key
+let _apiKeyFailed = false
+
 export async function parseWithLLM(message, apiKey) {
-  try {
-    const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-      {
+  // If the key already failed before, go straight to mock — no network request
+  if (_apiKeyFailed) {
+    console.warn('Gemini API key previously failed. Using offline AI parser.')
+    return getMockFallback(message)
+  }
+
+  // Try both endpoints: v1beta first (better JSON output), then v1
+  const endpoints = [
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+  ]
+
+  for (const url of endpoints) {
+    try {
+      const response = await fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -69,48 +83,126 @@ export async function parseWithLLM(message, apiKey) {
           generationConfig: {
             temperature: 0.1,
             maxOutputTokens: 600,
-            responseMimeType: 'application/json',
           },
         }),
+      })
+
+      if (!response.ok) {
+        const status = response.status
+        // 400 on v1beta? Try next endpoint (v1)
+        if (status === 400) continue
+
+        // 403/429 = key is dead or quota gone — cache it and use mock
+        if (status === 403 || status === 429) {
+          _apiKeyFailed = true
+          console.warn(`Gemini API returned ${status}. Switching to offline AI parser for this session.`)
+          return getMockFallback(message)
+        }
+
+        // Other errors — still try mock
+        const errText = await response.text()
+        throw new Error(`Gemini API error (${status}): ${errText.slice(0, 200)}`)
       }
-    )
 
-    if (!response.ok) {
-      const errText = await response.text()
-      throw new Error(`Gemini API error (${response.status}): ${errText.slice(0, 200)}`)
-    }
+      const data = await response.json()
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text
+      if (!text) throw new Error('Empty response from Gemini')
 
-    const data = await response.json()
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text
+      // Extract JSON — model may wrap it in ```json ... ```
+      const jsonMatch = text.match(/\{[\s\S]*\}/)
+      if (!jsonMatch) throw new Error('No JSON found in Gemini response')
 
-    if (!text) throw new Error('Empty response from Gemini')
+      const parsed = JSON.parse(jsonMatch[0])
 
-    const parsed = JSON.parse(text)
-
-    // Validate required fields
-    return {
-      action: parsed.action || 'query',
-      fromToken: parsed.fromToken || null,
-      toToken: parsed.toToken || null,
-      amount: parsed.amount != null ? Number(parsed.amount) : null,
-      isUSD: !!parsed.isUSD,
-      recipient: parsed.recipient || null,
-      message: parsed.message || 'Command processed.',
-      insights: Array.isArray(parsed.insights) ? parsed.insights : [],
-      confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.5,
-    }
-  } catch (error) {
-    console.error('AgentSwap AI error:', error)
-    return {
-      action: 'query',
-      fromToken: null,
-      toToken: null,
-      amount: null,
-      isUSD: false,
-      recipient: null,
-      message: `I had trouble processing that request. ${error.message}. Please try rephrasing your command.`,
-      insights: ['Make sure your Gemini API key is valid', 'Try a simpler command like "Swap 10 USDC to AVAX"'],
-      confidence: 0,
+      return {
+        action: parsed.action || 'query',
+        fromToken: parsed.fromToken || null,
+        toToken: parsed.toToken || null,
+        amount: parsed.amount != null ? Number(parsed.amount) : null,
+        isUSD: !!parsed.isUSD,
+        recipient: parsed.recipient || null,
+        message: parsed.message || 'Command processed.',
+        insights: Array.isArray(parsed.insights) ? parsed.insights : [],
+        confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.5,
+      }
+    } catch (error) {
+      // If this is the last endpoint, fall through to the final catch
+      if (url === endpoints[endpoints.length - 1]) {
+        console.error('AgentSwap AI error:', error)
+        return {
+          action: 'query',
+          fromToken: null,
+          toToken: null,
+          amount: null,
+          isUSD: false,
+          recipient: null,
+          message: `I had trouble processing that. ${error.message}. Try a simpler command like "Swap 10 USDC to AVAX".`,
+          insights: ['Check your API key in ⚙️ Settings', 'Try: "Swap 50 USDC to AVAX"'],
+          confidence: 0,
+        }
+      }
+      // Otherwise try next endpoint
+      continue
     }
   }
+
+  // Should never reach here, but just in case
+  return getMockFallback(message)
 }
+
+/**
+ * Fallback mock response generator for when the API quota is exceeded during the hackathon.
+ */
+function getMockFallback(message) {
+  const msg = message.toLowerCase()
+  
+  if (msg.includes('swap') || msg.includes('convert')) {
+    let fromToken = msg.includes('usdc') ? 'USDC' : msg.includes('usdt') ? 'USDT' : msg.includes('avax') ? 'AVAX' : null
+    let toToken = msg.includes('avax') && fromToken !== 'AVAX' ? 'AVAX' : msg.includes('usdc') && fromToken !== 'USDC' ? 'USDC' : 'WAVAX'
+    
+    // Extract a number if present
+    const amountMatch = message.match(/\d+/)
+    const amount = amountMatch ? Number(amountMatch[0]) : null
+    
+    return {
+      action: 'swap',
+      fromToken: fromToken || 'USDC',
+      toToken: toToken,
+      amount: amount || 10,
+      isUSD: msg.includes('$') || msg.includes('dollar'),
+      recipient: null,
+      message: "(Mock Fallback) I'll set up that swap for you. Note: We are using a mock response because the Gemini API quota was exceeded.",
+      insights: ["API quota exceeded: Using offline mock parser", "Trader Joe provides the best liquidity"],
+      confidence: 0.9
+    }
+  }
+  
+  if (msg.includes('send') || msg.includes('pay')) {
+    const amountMatch = message.match(/\d+/)
+    
+    return {
+      action: 'send',
+      fromToken: msg.includes('usdc') ? 'USDC' : 'AVAX',
+      toToken: null,
+      amount: amountMatch ? Number(amountMatch[0]) : 10,
+      isUSD: msg.includes('$') || msg.includes('dollar'),
+      recipient: '0x1234567890123456789012345678901234567890',
+      message: "(Mock Fallback) I'll prepare that payment. Note: We are using a mock response because the Gemini API quota was exceeded.",
+      insights: ["API quota exceeded: Using offline mock parser"],
+      confidence: 0.9
+    }
+  }
+
+  return {
+    action: 'query',
+    fromToken: null,
+    toToken: null,
+    amount: null,
+    isUSD: false,
+    recipient: null,
+    message: "Your Gemini API key is blocked or has exceeded its quota. Please generate a new API key at aistudio.google.com/apikey and update it in ⚙️ Settings. In the meantime, try swap/send commands — they work offline!",
+    insights: ["Get a free key at aistudio.google.com/apikey", "Try: 'Swap 50 USDC to AVAX'"],
+    confidence: 1.0
+  }
+}
+
