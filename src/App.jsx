@@ -937,22 +937,12 @@ const AIAssistantPanel = ({ onIntent, isConnected }) => {
     const message = (text || input).trim()
     if (!message) return
 
-    const apiKey = localStorage.getItem('agentswap_api_key')
-    if (!apiKey) {
-      setMessages(prev => [...prev,
-        { role: 'user', content: message, type: 'text' },
-        { role: 'assistant', content: '⚠️ Please set your Gemini API key first!\n\nClick the ⚙️ Settings icon in the top navigation bar to add your free Google Gemini API key.', type: 'error', insights: ['Get a free key at aistudio.google.com/apikey'] }
-      ])
-      if (!text) setInput('')
-      return
-    }
-
     setMessages(prev => [...prev, { role: 'user', content: message, type: 'text' }])
     if (!text) setInput('')
     setIsThinking(true)
 
     try {
-      const result = await parseWithLLM(message, apiKey)
+      const result = await parseWithLLM(message, localStorage.getItem('agentswap_api_key'))
 
       const aiMessage = {
         role: 'assistant',

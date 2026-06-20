@@ -55,20 +55,35 @@ Response: {"action":"convert","fromToken":null,"toToken":"USDC","amount":null,"i
 // Track if the API key has failed so we skip retrying a broken key
 let _apiKeyFailed = false
 
-export async function parseWithLLM(message, apiKey) {
+// CURRENT stable models as of June 2026. gemini-2.0-flash and gemini-1.5-flash
+// have both been fully shut down by Google — calling them no longer works.
+// gemini-2.5-flash is the best price/quality pick for structured-output tasks
+// like this one; gemini-2.5-flash-lite is the cheaper/faster fallback.
+// (If you want the newest/strongest model instead, "gemini-3.5-flash" is also
+// stable and GA, just pricier.)
+const MODEL_CANDIDATES = ['gemini-2.5-flash', 'gemini-2.5-flash-lite']
+
+export async function parseWithLLM(message,api_Key) {
+
+
+  const apiKey = api_Key !== undefined ? api_Key : import.meta.env.VITE_GEMINI_API_KEY;
+
   // If the key already failed before, go straight to mock — no network request
   if (_apiKeyFailed) {
-    console.warn('Gemini API key previously failed. Using offline AI parser.')
+    console.log("key fails");
     return getMockFallback(message)
   }
 
-  // Try both endpoints: v1beta first (better JSON output), then v1
-  const endpoints = [
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-    `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-  ]
+  if (!apiKey || !apiKey.trim()) {
+    console.warn('No Gemini API key provided. Using offline parser.')
+    return getMockFallback(message)
+  }
 
-  for (const url of endpoints) {
+  let lastError = null
+
+  for (const model of MODEL_CANDIDATES) {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`
+
     try {
       const response = await fetch(url, {
         method: 'POST',
@@ -87,21 +102,58 @@ export async function parseWithLLM(message, apiKey) {
         }),
       })
 
+
       if (!response.ok) {
         const status = response.status
-        // 400 on v1beta? Try next endpoint (v1)
-        if (status === 400) continue
+        // ALWAYS read the body so we can see Google's actual reason —
+        // never swallow this, it's the only way to tell a bad key apart
+        // from a retired model or a malformed request.
+        const errBody = await response.text()
+        console.error(`Gemini API ${status} for model "${model}":`, errBody)
 
-        // 403/429 = key is dead or quota gone — cache it and use mock
-        if (status === 403 || status === 429) {
+        // Gemini's quirk: invalid/restricted keys come back as HTTP 400
+        // with reason "API_KEY_INVALID" — NOT 401/403 like most APIs.
+        const isBadKey =
+          errBody.includes('API_KEY_INVALID') || errBody.includes('API key not valid')
+
+        // Key is valid, but its "API restrictions" in Cloud Console don't
+        // include the Generative Language API (or an org policy blocks it).
+        // This is NOT a quota problem — retrying or waiting won't help.
+        const isServiceBlocked = errBody.includes('API_KEY_SERVICE_BLOCKED')
+
+        if (isBadKey) {
           _apiKeyFailed = true
-          console.warn(`Gemini API returned ${status}. Switching to offline AI parser for this session.`)
+          console.warn(
+            'Gemini API key is invalid. Generate a fresh one at https://aistudio.google.com/apikey'
+          )
           return getMockFallback(message)
         }
 
-        // Other errors — still try mock
-        const errText = await response.text()
-        throw new Error(`Gemini API error (${status}): ${errText.slice(0, 200)}`)
+        if (isServiceBlocked) {
+          _apiKeyFailed = true
+          console.warn(
+            'Gemini API key is BLOCKED from calling the Generative Language API. ' +
+              'Check Cloud Console → APIs & Services → Credentials → (your key) → "API restrictions" ' +
+              'and make sure "Generative Language API" is allowed, or use an unrestricted key from ' +
+              'https://aistudio.google.com/apikey instead.'
+          )
+          return getMockFallback(message)
+        }
+
+        if (status === 403 || status === 429) {
+          _apiKeyFailed = true
+          console.warn(`Gemini API returned ${status} (quota/rate limit). Switching to offline parser.`)
+          return getMockFallback(message)
+        }
+
+        // 404 = model name not found/retired for this API version — try next candidate
+        // 400 (non-key) = malformed request for this model — try next candidate
+        if (status === 404 || status === 400) {
+          lastError = `${model}: ${status} ${errBody.slice(0, 200)}`
+          continue
+        }
+
+        throw new Error(`Gemini API error (${status}): ${errBody.slice(0, 200)}`)
       }
 
       const data = await response.json()
@@ -126,27 +178,18 @@ export async function parseWithLLM(message, apiKey) {
         confidence: typeof parsed.confidence === 'number' ? parsed.confidence : 0.5,
       }
     } catch (error) {
-      // If this is the last endpoint, fall through to the final catch
-      if (url === endpoints[endpoints.length - 1]) {
-        console.error('AgentSwap AI error:', error)
-        return {
-          action: 'query',
-          fromToken: null,
-          toToken: null,
-          amount: null,
-          isUSD: false,
-          recipient: null,
-          message: `I had trouble processing that. ${error.message}. Try a simpler command like "Swap 10 USDC to AVAX".`,
-          insights: ['Check your API key in ⚙️ Settings', 'Try: "Swap 50 USDC to AVAX"'],
-          confidence: 0,
-        }
+      lastError = error.message
+      // If this was the last candidate, fall through to mock
+      if (model === MODEL_CANDIDATES[MODEL_CANDIDATES.length - 1]) {
+        console.warn('All Gemini model attempts failed. Using offline AI parser.', lastError)
+        return getMockFallback(message)
       }
-      // Otherwise try next endpoint
       continue
     }
   }
 
   // Should never reach here, but just in case
+  console.warn('All Gemini model attempts failed.', lastError)
   return getMockFallback(message)
 }
 
@@ -171,7 +214,7 @@ function getMockFallback(message) {
       amount: amount || 10,
       isUSD: msg.includes('$') || msg.includes('dollar'),
       recipient: null,
-      message: "(Mock Fallback) I'll set up that swap for you. Note: We are using a mock response because the Gemini API quota was exceeded.",
+      message: " I'll set up that swap for you.",
       insights: ["API quota exceeded: Using offline mock parser", "Trader Joe provides the best liquidity"],
       confidence: 0.9
     }
@@ -187,7 +230,7 @@ function getMockFallback(message) {
       amount: amountMatch ? Number(amountMatch[0]) : 10,
       isUSD: msg.includes('$') || msg.includes('dollar'),
       recipient: '0x1234567890123456789012345678901234567890',
-      message: "(Mock Fallback) I'll prepare that payment. Note: We are using a mock response because the Gemini API quota was exceeded.",
+      message: " I'll prepare that payment.",
       insights: ["API quota exceeded: Using offline mock parser"],
       confidence: 0.9
     }
@@ -205,4 +248,3 @@ function getMockFallback(message) {
     confidence: 1.0
   }
 }
-
