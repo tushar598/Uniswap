@@ -1,10 +1,8 @@
 
-import { useEffect, useRef, useState } from 'react'
-import { mainnet, sepolia, polygon, arbitrum, optimism, base } from 'viem/chains'
+import { useEffect, useRef, useState, useCallback } from 'react'
+import { avalanche, avalancheFuji } from 'viem/chains'
 import { formatEther, formatUnits, parseUnits } from 'viem'
 import {
-  createConfig,
-  http,
   WagmiProvider,
   useConnect,
   useAccount,
@@ -16,99 +14,17 @@ import {
   useWriteContract,
   useWaitForTransactionReceipt,
 } from 'wagmi'
-import { injected, metaMask, coinbaseWallet } from 'wagmi/connectors'
-import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query'
+import { QueryClientProvider, useQuery } from '@tanstack/react-query'
 import gsap from 'gsap'
 import { ScrollTrigger } from 'gsap/ScrollTrigger'
 
+import {
+  config, queryClient, TOKENS, CHAIN_META, PRICE_MAP, COINGECKO_IDS,
+  JOE_ROUTER_ABI, ERC20_ABI, TRADER_JOE_ROUTER, WAVAX_ADDRESS,
+} from './config'
+import { parseWithLLM } from './utils/ai'
+
 gsap.registerPlugin(ScrollTrigger)
-
-// ─── Wagmi Config ───────────────────────────────────────────────────────────────
-const config = createConfig({
-  chains: [mainnet, sepolia, polygon, arbitrum, optimism, base],
-  connectors: [
-    injected(),
-    metaMask(),
-    coinbaseWallet({ appName: 'Web3 - work' }),
-  ],
-  transports: {
-    [mainnet.id]: http(),
-    [sepolia.id]: http(),
-    [polygon.id]: http(),
-    [arbitrum.id]: http(),
-    [optimism.id]: http(),
-    [base.id]: http(),
-  },
-})
-
-const queryClient = new QueryClient()
-
-// ─── Constants ──────────────────────────────────────────────────────────────────
-const UNISWAP_V2_ROUTER = '0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D'
-const WETH_ADDRESS = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'
-
-const TOKENS = [
-  { symbol: 'ETH',  name: 'Ethereum',       decimals: 18, address: null,                                         color: '#627EEA' },
-  { symbol: 'USDC', name: 'USD Coin',        decimals: 6,  address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', color: '#2775CA' },
-  { symbol: 'USDT', name: 'Tether USD',      decimals: 6,  address: '0xdAC17F958D2ee523a2206206994597C13D831ec7', color: '#26A17B' },
-  { symbol: 'WBTC', name: 'Wrapped Bitcoin', decimals: 8,  address: '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599', color: '#F7931A' },
-  { symbol: 'UNI',  name: 'Uniswap',        decimals: 18, address: '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984', color: '#FF007A' },
-  { symbol: 'LINK', name: 'Chainlink',       decimals: 18, address: '0x514910771AF9Ca656af840dff83E8264EcF986CA', color: '#2A5ADA' },
-  { symbol: 'AAVE', name: 'Aave',            decimals: 18, address: '0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9', color: '#B6509E' },
-  { symbol: 'DAI',  name: 'Dai Stablecoin',  decimals: 18, address: '0x6B175474E89094C44Da98b954EedeAC495271d0F', color: '#F5AC37' },
-]
-
-const ERC20_ABI = [
-  { inputs: [{ name: 'account', type: 'address' }], name: 'balanceOf', outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' },
-  { inputs: [{ name: 'owner', type: 'address' }, { name: 'spender', type: 'address' }], name: 'allowance', outputs: [{ name: '', type: 'uint256' }], stateMutability: 'view', type: 'function' },
-  { inputs: [{ name: 'spender', type: 'address' }, { name: 'amount', type: 'uint256' }], name: 'approve', outputs: [{ name: '', type: 'bool' }], stateMutability: 'nonpayable', type: 'function' },
-]
-
-const UNISWAP_V2_ROUTER_ABI = [
-  {
-    inputs: [{ name: 'amountIn', type: 'uint256' }, { name: 'amountOutMin', type: 'uint256' }, { name: 'path', type: 'address[]' }, { name: 'to', type: 'address' }, { name: 'deadline', type: 'uint256' }],
-    name: 'swapExactTokensForTokens',
-    outputs: [{ name: 'amounts', type: 'uint256[]' }],
-    stateMutability: 'nonpayable',
-    type: 'function',
-  },
-  {
-    inputs: [{ name: 'amountOutMin', type: 'uint256' }, { name: 'path', type: 'address[]' }, { name: 'to', type: 'address' }, { name: 'deadline', type: 'uint256' }],
-    name: 'swapExactETHForTokens',
-    outputs: [{ name: 'amounts', type: 'uint256[]' }],
-    stateMutability: 'payable',
-    type: 'function',
-  },
-  {
-    inputs: [{ name: 'amountIn', type: 'uint256' }, { name: 'amountOutMin', type: 'uint256' }, { name: 'path', type: 'address[]' }, { name: 'to', type: 'address' }, { name: 'deadline', type: 'uint256' }],
-    name: 'swapExactTokensForETH',
-    outputs: [{ name: 'amounts', type: 'uint256[]' }],
-    stateMutability: 'nonpayable',
-    type: 'function',
-  },
-  {
-    inputs: [{ name: 'amountIn', type: 'uint256' }, { name: 'path', type: 'address[]' }],
-    name: 'getAmountsOut',
-    outputs: [{ name: 'amounts', type: 'uint256[]' }],
-    stateMutability: 'view',
-    type: 'function',
-  },
-]
-
-const CHAIN_META = {
-  [mainnet.id]:  { color: '#627EEA', name: 'Ethereum' },
-  [sepolia.id]:  { color: '#CFB5F0', name: 'Sepolia'  },
-  [polygon.id]:  { color: '#8247E5', name: 'Polygon'  },
-  [arbitrum.id]: { color: '#28A0F0', name: 'Arbitrum' },
-  [optimism.id]: { color: '#FF0420', name: 'Optimism' },
-  [base.id]:     { color: '#0052FF', name: 'Base'     },
-}
-
-const PRICE_MAP = {
-  ETH: 'ethereum', USDC: 'usd-coin', USDT: 'tether',
-  WBTC: 'wrapped-bitcoin', UNI: 'uniswap', LINK: 'chainlink',
-  AAVE: 'aave', DAI: 'dai',
-}
 
 // ─── Wallet SVG Icons ───────────────────────────────────────────────────────────
 const MetaMaskIcon = () => (
@@ -144,9 +60,9 @@ const WalletConnectIcon = () => (
 const InjectedIcon = () => (
   <svg viewBox="0 0 40 40" className="w-9 h-9" fill="none" xmlns="http://www.w3.org/2000/svg">
     <circle cx="20" cy="20" r="20" fill="#1A1A2E"/>
-    <path d="M20 8L28 12V20C28 24.4 24.4 28.8 20 30C15.6 28.8 12 24.4 12 20V12L20 8Z" stroke="#00D4FF" strokeWidth="1.5" fill="rgba(0,212,255,0.1)"/>
-    <circle cx="20" cy="20" r="3" fill="#00D4FF"/>
-    <path d="M16 20H24M20 16V24" stroke="#00D4FF" strokeWidth="1.5" strokeLinecap="round"/>
+    <path d="M20 8L28 12V20C28 24.4 24.4 28.8 20 30C15.6 28.8 12 24.4 12 20V12L20 8Z" stroke="#E84142" strokeWidth="1.5" fill="rgba(232,65,66,0.1)"/>
+    <circle cx="20" cy="20" r="3" fill="#E84142"/>
+    <path d="M16 20H24M20 16V24" stroke="#E84142" strokeWidth="1.5" strokeLinecap="round"/>
   </svg>
 )
 
@@ -159,7 +75,7 @@ const getWalletIcon = (name) => {
 
 // ─── Token Icon ─────────────────────────────────────────────────────────────────
 const TokenIcon = ({ symbol, color, size = 'w-8 h-8' }) => {
-  const glyphs = { ETH: '⟠', USDC: '◎', USDT: '₮', WBTC: '₿', UNI: '🦄', LINK: '⬡', AAVE: 'A', DAI: '◈' }
+  const glyphs = { AVAX: '🔺', USDC: '◎', USDT: '₮', WAVAX: '🔺', JOE: '🦊', 'DAI.e': '◈', 'WBTC.e': '₿', 'WETH.e': '⟠' }
   return (
     <div
       className={`${size} rounded-full flex items-center justify-center text-white font-bold text-xs flex-shrink-0`}
@@ -186,8 +102,7 @@ const useTokenPrices = () =>
   useQuery({
     queryKey: ['tokenPrices'],
     queryFn: async () => {
-      const ids = 'ethereum,usd-coin,tether,wrapped-bitcoin,uniswap,chainlink,aave,dai'
-      const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd&include_24hr_change=true`)
+      const res = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${COINGECKO_IDS}&vs_currencies=usd&include_24hr_change=true`)
       return res.json()
     },
     refetchInterval: 30000,
@@ -195,7 +110,7 @@ const useTokenPrices = () =>
   })
 
 // ─── Swap Hook ──────────────────────────────────────────────────────────────────
-const useSwap = () => {
+const useSwap = (externalIntent) => {
   const { address } = useAccount()
   const chainId = useChainId()
   const [tokenIn, setTokenIn]   = useState(TOKENS[0])
@@ -203,19 +118,42 @@ const useSwap = () => {
   const [amountIn, setAmountIn] = useState('')
   const [slippage, setSlippage] = useState('0.5')
 
+  // Apply external AI intent
+  useEffect(() => {
+    if (externalIntent) {
+      if (externalIntent.fromToken) {
+        const t = TOKENS.find(tk => tk.symbol === externalIntent.fromToken)
+        if (t) setTokenIn(t)
+      }
+      if (externalIntent.toToken) {
+        const t = TOKENS.find(tk => tk.symbol === externalIntent.toToken)
+        if (t) setTokenOut(t)
+      }
+      if (externalIntent.amount != null) {
+        setAmountIn(String(externalIntent.amount))
+      }
+    }
+  }, [externalIntent])
+
+  const routerAddress = TRADER_JOE_ROUTER[chainId]
+  const wavaxAddress = WAVAX_ADDRESS[chainId]
+  const isAvalanche = chainId === avalanche.id || chainId === avalancheFuji.id
+
   const amountInParsed = amountIn && !isNaN(amountIn) ? parseUnits(amountIn, tokenIn.decimals) : 0n
 
   const path =
-    tokenIn.address === null  ? [WETH_ADDRESS, tokenOut.address || WETH_ADDRESS] :
-    tokenOut.address === null ? [tokenIn.address, WETH_ADDRESS] :
-    [tokenIn.address, WETH_ADDRESS, tokenOut.address]
+    tokenIn.address === null
+      ? [wavaxAddress, tokenOut.address || wavaxAddress]
+      : tokenOut.address === null
+        ? [tokenIn.address, wavaxAddress]
+        : [tokenIn.address, wavaxAddress, tokenOut.address]
 
   const { data: quoteData } = useReadContract({
-    address: chainId === mainnet.id ? UNISWAP_V2_ROUTER : undefined,
-    abi: UNISWAP_V2_ROUTER_ABI,
+    address: routerAddress || undefined,
+    abi: JOE_ROUTER_ABI,
     functionName: 'getAmountsOut',
     args: [amountInParsed, path],
-    query: { enabled: !!amountIn && amountInParsed > 0n && chainId === mainnet.id },
+    query: { enabled: !!amountIn && amountInParsed > 0n && !!routerAddress && isAvalanche },
   })
 
   const amountOut = quoteData ? quoteData[quoteData.length - 1] : 0n
@@ -227,8 +165,8 @@ const useSwap = () => {
     address: tokenIn.address || undefined,
     abi: ERC20_ABI,
     functionName: 'allowance',
-    args: address ? [address, UNISWAP_V2_ROUTER] : undefined,
-    query: { enabled: !!address && !!tokenIn.address },
+    args: address ? [address, routerAddress] : undefined,
+    query: { enabled: !!address && !!tokenIn.address && !!routerAddress },
   })
 
   const needsApproval = tokenIn.address !== null && allowance !== undefined && amountInParsed > 0n && allowance < amountInParsed
@@ -240,22 +178,22 @@ const useSwap = () => {
   const { isLoading: swapLoading, isSuccess: swapSuccess } = useWaitForTransactionReceipt({ hash: swapTx })
 
   const handleApprove = () => {
-    if (!tokenIn.address) return
-    approve({ address: tokenIn.address, abi: ERC20_ABI, functionName: 'approve', args: [UNISWAP_V2_ROUTER, amountInParsed] })
+    if (!tokenIn.address || !routerAddress) return
+    approve({ address: tokenIn.address, abi: ERC20_ABI, functionName: 'approve', args: [routerAddress, amountInParsed] })
   }
 
   const handleSwap = () => {
-    if (!address || amountInParsed === 0n || amountOut === 0n) return
+    if (!address || amountInParsed === 0n || !routerAddress) return
     const bps = BigInt(Math.floor(parseFloat(slippage) * 100))
-    const amountOutMin = (amountOut * (10000n - bps)) / 10000n
+    const amountOutMin = amountOut > 0n ? (amountOut * (10000n - bps)) / 10000n : 0n
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 1200)
 
     if (tokenIn.address === null) {
-      swap({ address: UNISWAP_V2_ROUTER, abi: UNISWAP_V2_ROUTER_ABI, functionName: 'swapExactETHForTokens', args: [amountOutMin, path, address, deadline], value: amountInParsed })
+      swap({ address: routerAddress, abi: JOE_ROUTER_ABI, functionName: 'swapExactAVAXForTokens', args: [amountOutMin, path, address, deadline], value: amountInParsed })
     } else if (tokenOut.address === null) {
-      swap({ address: UNISWAP_V2_ROUTER, abi: UNISWAP_V2_ROUTER_ABI, functionName: 'swapExactTokensForETH', args: [amountInParsed, amountOutMin, path, address, deadline] })
+      swap({ address: routerAddress, abi: JOE_ROUTER_ABI, functionName: 'swapExactTokensForAVAX', args: [amountInParsed, amountOutMin, path, address, deadline] })
     } else {
-      swap({ address: UNISWAP_V2_ROUTER, abi: UNISWAP_V2_ROUTER_ABI, functionName: 'swapExactTokensForTokens', args: [amountInParsed, amountOutMin, path, address, deadline] })
+      swap({ address: routerAddress, abi: JOE_ROUTER_ABI, functionName: 'swapExactTokensForTokens', args: [amountInParsed, amountOutMin, path, address, deadline] })
     }
   }
 
@@ -271,7 +209,7 @@ const useSwap = () => {
     slippage, setSlippage, needsApproval,
     handleApprove, approveLoading, approveSuccess,
     handleSwap, swapLoading, swapSuccess, swapTx, approveTx,
-    flipTokens, chainId,
+    flipTokens, chainId, isAvalanche, routerAddress,
   }
 }
 
@@ -303,7 +241,7 @@ const TokenSelector = ({ selected, onSelect, exclude }) => {
           <div
             ref={menuRef}
             className="absolute top-full mt-2 right-0 z-50 rounded-2xl overflow-hidden w-52"
-            style={{ background: '#0D1117', border: '1px solid rgba(0,212,255,0.2)', boxShadow: '0 20px 60px rgba(0,0,0,0.8)' }}
+            style={{ background: '#0D1117', border: '1px solid rgba(232,65,66,0.2)', boxShadow: '0 20px 60px rgba(0,0,0,0.8)' }}
           >
             {TOKENS.filter(t => t.symbol !== exclude?.symbol).map(token => (
               <button
@@ -326,16 +264,15 @@ const TokenSelector = ({ selected, onSelect, exclude }) => {
 }
 
 // ─── Swap Interface ──────────────────────────────────────────────────────────────
-const SwapInterface = () => {
-  const { data: prices } = useTokenPrices()
+const SwapInterface = ({ aiIntent, prices, onSwapComplete }) => {
   const {
     tokenIn, setTokenIn, tokenOut, setTokenOut,
     amountIn, setAmountIn, amountOutFormatted,
     slippage, setSlippage, needsApproval,
     handleApprove, approveLoading,
     handleSwap, swapLoading, swapSuccess, swapTx,
-    flipTokens, chainId,
-  } = useSwap()
+    flipTokens, chainId, isAvalanche,
+  } = useSwap(aiIntent)
   const { isConnected } = useAccount()
   const ref = useRef(null)
   const flipBtnRef = useRef(null)
@@ -348,11 +285,36 @@ const SwapInterface = () => {
     })
   }, [])
 
+  // Track swap completion for activity feed
+  useEffect(() => {
+    if (swapSuccess && swapTx && onSwapComplete) {
+      onSwapComplete({
+        id: Date.now(),
+        type: 'swap',
+        fromToken: tokenIn.symbol,
+        toToken: tokenOut.symbol,
+        amountIn,
+        amountOut: amountOutFormatted,
+        txHash: swapTx,
+        timestamp: Date.now(),
+        status: 'confirmed',
+      })
+    }
+  }, [swapSuccess])
+
   const pIn  = prices?.[PRICE_MAP[tokenIn.symbol]]?.usd  || 0
   const pOut = prices?.[PRICE_MAP[tokenOut.symbol]]?.usd || 0
   const usdIn  = amountIn           ? `$${(parseFloat(amountIn)           * pIn).toFixed(2)}`  : '$0.00'
   const usdOut = amountOutFormatted ? `$${(parseFloat(amountOutFormatted) * pOut).toFixed(2)}` : '$0.00'
-  const isMainnet = chainId === mainnet.id
+
+  // Estimated output from prices when on-chain quote unavailable
+  const estimatedOut = (!amountOutFormatted && amountIn && pIn > 0 && pOut > 0)
+    ? (parseFloat(amountIn) * pIn / pOut).toFixed(6)
+    : null
+  const displayOut = amountOutFormatted || estimatedOut || ''
+  const displayUsdOut = displayOut ? `$${(parseFloat(displayOut) * pOut).toFixed(2)}` : '$0.00'
+
+  const explorerUrl = CHAIN_META[chainId]?.explorer || 'https://snowtrace.io'
 
   const handleFlip = () => {
     gsap.to(flipBtnRef.current, { rotate: '+=180', duration: 0.4, ease: 'back.out(1.7)' })
@@ -361,29 +323,32 @@ const SwapInterface = () => {
 
   return (
     <div ref={ref} className="rounded-3xl p-6 relative overflow-hidden"
-      style={{ background: 'linear-gradient(145deg,rgba(13,17,23,.97),rgba(22,30,46,.97))', border: '1px solid rgba(0,212,255,.15)', boxShadow: '0 0 40px rgba(0,212,255,.04),inset 0 1px 0 rgba(255,255,255,.05)' }}>
+      style={{ background: 'linear-gradient(145deg,rgba(13,17,23,.97),rgba(22,30,46,.97))', border: '1px solid rgba(232,65,66,.15)', boxShadow: '0 0 40px rgba(232,65,66,.04),inset 0 1px 0 rgba(255,255,255,.05)' }}>
 
-      <div className="absolute -top-24 -right-24 w-48 h-48 rounded-full opacity-10 blur-3xl pointer-events-none" style={{ background: '#00D4FF' }} />
+      <div className="absolute -top-24 -right-24 w-48 h-48 rounded-full opacity-10 blur-3xl pointer-events-none" style={{ background: '#E84142' }} />
 
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
-        <h3 className="text-white font-black text-lg tracking-widest" style={{ fontFamily: "'Orbitron',sans-serif" }}>SWAP</h3>
+        <div className="flex items-center gap-2">
+          <h3 className="text-white font-black text-lg tracking-widest" style={{ fontFamily: "'Orbitron',sans-serif" }}>SWAP</h3>
+          <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: 'rgba(232,65,66,.1)', color: '#E84142', border: '1px solid rgba(232,65,66,.2)' }}>Trader Joe</span>
+        </div>
         <div className="flex items-center gap-1.5">
           <span className="text-gray-500 text-xs mr-1">Slippage:</span>
           {['0.1','0.5','1.0'].map(s => (
             <button key={s} onClick={() => setSlippage(s)}
               className="text-xs px-2.5 py-1 rounded-lg transition-all"
-              style={{ background: slippage===s?'rgba(0,212,255,.2)':'rgba(255,255,255,.05)', color: slippage===s?'#00D4FF':'#555', border: slippage===s?'1px solid rgba(0,212,255,.4)':'1px solid transparent' }}>
+              style={{ background: slippage===s?'rgba(232,65,66,.2)':'rgba(255,255,255,.05)', color: slippage===s?'#E84142':'#555', border: slippage===s?'1px solid rgba(232,65,66,.4)':'1px solid transparent' }}>
               {s}%
             </button>
           ))}
         </div>
       </div>
 
-      {!isMainnet && (
+      {!isAvalanche && (
         <div className="mb-4 px-4 py-3 rounded-xl text-xs text-yellow-400 flex items-center gap-2"
           style={{ background: 'rgba(250,204,21,.08)', border: '1px solid rgba(250,204,21,.2)' }}>
-          ⚠️ Switch to Ethereum Mainnet to enable swaps
+          ⚠️ Switch to Avalanche to enable swaps
         </div>
       )}
 
@@ -405,7 +370,7 @@ const SwapInterface = () => {
       <div className="flex justify-center my-2 relative z-10">
         <button ref={flipBtnRef} onClick={handleFlip}
           className="w-9 h-9 rounded-xl flex items-center justify-center font-bold text-lg transition-colors"
-          style={{ background: 'rgba(0,212,255,.1)', border: '1px solid rgba(0,212,255,.25)', color: '#00D4FF' }}>
+          style={{ background: 'rgba(232,65,66,.1)', border: '1px solid rgba(232,65,66,.25)', color: '#E84142' }}>
           ⇅
         </button>
       </div>
@@ -414,23 +379,23 @@ const SwapInterface = () => {
       <div className="rounded-2xl p-4 mb-4" style={{ background: 'rgba(255,255,255,.04)', border: '1px solid rgba(255,255,255,.06)' }}>
         <div className="flex justify-between text-xs text-gray-500 mb-3">
           <span className="uppercase tracking-widest">You Receive</span>
-          <span>{usdOut}</span>
+          <span>{displayUsdOut}{estimatedOut ? ' (est.)' : ''}</span>
         </div>
         <div className="flex items-center gap-3">
           <div className="flex-1 text-white text-3xl font-black w-0 truncate" style={{ fontFamily: "'Orbitron',sans-serif" }}>
-            {amountOutFormatted || <span className="text-gray-800">0.0</span>}
+            {displayOut || <span className="text-gray-800">0.0</span>}
           </div>
           <TokenSelector selected={tokenOut} onSelect={setTokenOut} exclude={tokenIn} />
         </div>
       </div>
 
       {/* Route info */}
-      {amountOutFormatted && amountIn && (
+      {displayOut && amountIn && (
         <div className="flex justify-between items-center px-4 py-2.5 rounded-xl mb-4 text-xs"
           style={{ background: 'rgba(255,255,255,.03)', border: '1px solid rgba(255,255,255,.04)' }}>
           <span className="text-gray-500">Exchange Rate</span>
           <span className="text-gray-300 font-mono">
-            1 {tokenIn.symbol} ≈ {(parseFloat(amountOutFormatted)/parseFloat(amountIn)).toFixed(6)} {tokenOut.symbol}
+            1 {tokenIn.symbol} ≈ {(parseFloat(displayOut)/parseFloat(amountIn)).toFixed(6)} {tokenOut.symbol}
           </span>
         </div>
       )}
@@ -445,22 +410,22 @@ const SwapInterface = () => {
           {approveLoading ? '⏳ Approving…' : `Approve ${tokenIn.symbol}`}
         </button>
       ) : (
-        <button onClick={handleSwap} disabled={swapLoading||!amountIn||!isMainnet}
+        <button onClick={handleSwap} disabled={swapLoading||!amountIn||!isAvalanche}
           className="w-full py-4 rounded-2xl font-black text-sm tracking-widest uppercase transition-all hover:scale-[1.02] active:scale-[.98]"
           style={{
-            background: (swapLoading||!amountIn||!isMainnet)?'rgba(0,212,255,.07)':'linear-gradient(135deg,#00D4FF,#0099CC)',
-            color: (swapLoading||!amountIn||!isMainnet)?'#00D4FF33':'#000',
+            background: (swapLoading||!amountIn||!isAvalanche)?'rgba(232,65,66,.07)':'linear-gradient(135deg,#E84142,#C73536)',
+            color: (swapLoading||!amountIn||!isAvalanche)?'#E8414233':'#fff',
             fontFamily:"'Orbitron',sans-serif",
-            boxShadow: (!swapLoading&&amountIn&&isMainnet)?'0 0 25px rgba(0,212,255,.35)':'none',
+            boxShadow: (!swapLoading&&amountIn&&isAvalanche)?'0 0 25px rgba(232,65,66,.35)':'none',
           }}>
           {swapLoading?'⏳ Swapping…':swapSuccess?'✅ Swapped!':'Swap Tokens'}
         </button>
       )}
 
       {swapTx && (
-        <a href={`https://etherscan.io/tx/${swapTx}`} target="_blank" rel="noopener noreferrer"
-          className="block text-center text-xs mt-3 hover:underline" style={{ color: '#00D4FF' }}>
-          View on Etherscan ↗
+        <a href={`${explorerUrl}/tx/${swapTx}`} target="_blank" rel="noopener noreferrer"
+          className="block text-center text-xs mt-3 hover:underline" style={{ color: '#E84142' }}>
+          View on Snowtrace ↗
         </a>
       )}
     </div>
@@ -526,8 +491,8 @@ const Portfolio = ({ address, prices }) => {
 
   return (
     <div ref={ref} className="rounded-3xl p-5 relative overflow-hidden"
-      style={{ background: 'linear-gradient(145deg,rgba(13,17,23,.97),rgba(22,30,46,.97))', border: '1px solid rgba(0,212,255,.15)' }}>
-      <div className="absolute -bottom-12 -left-12 w-36 h-36 rounded-full opacity-10 blur-3xl pointer-events-none" style={{ background: '#7B2FBE' }} />
+      style={{ background: 'linear-gradient(145deg,rgba(13,17,23,.97),rgba(22,30,46,.97))', border: '1px solid rgba(232,65,66,.15)' }}>
+      <div className="absolute -bottom-12 -left-12 w-36 h-36 rounded-full opacity-10 blur-3xl pointer-events-none" style={{ background: '#E84142' }} />
       <h3 className="text-white font-black text-base mb-4 tracking-widest" style={{ fontFamily: "'Orbitron',sans-serif" }}>PORTFOLIO</h3>
       <div className="space-y-0.5">
         {TOKENS.map((t, i) => <TokenBalanceRow key={t.symbol} token={t} address={address} prices={prices} index={i} />)}
@@ -554,7 +519,8 @@ const WalletInfoCard = () => {
   if (!isConnected) return null
 
   const short = `${address.slice(0,8)}…${address.slice(-6)}`
-  const eth   = balance ? Number(formatEther(balance.value)).toFixed(5) : '0.00000'
+  const bal   = balance ? Number(formatEther(balance.value)).toFixed(5) : '0.00000'
+  const explorerUrl = CHAIN_META[chainId]?.explorer || 'https://snowtrace.io'
 
   const handleCopy = () => {
     navigator.clipboard?.writeText(address)
@@ -564,9 +530,8 @@ const WalletInfoCard = () => {
 
   return (
     <div ref={ref} className="rounded-3xl p-5 relative overflow-hidden"
-      style={{ background: 'linear-gradient(135deg,rgba(0,212,255,.07),rgba(123,47,190,.07))', border: '1px solid rgba(0,212,255,.2)', boxShadow: '0 0 60px rgba(0,212,255,.06)' }}>
-      {/* grid bg */}
-      <div className="absolute inset-0 opacity-[.04] pointer-events-none" style={{ backgroundImage:'linear-gradient(rgba(0,212,255,.6) 1px,transparent 1px),linear-gradient(90deg,rgba(0,212,255,.6) 1px,transparent 1px)', backgroundSize:'28px 28px' }} />
+      style={{ background: 'linear-gradient(135deg,rgba(232,65,66,.07),rgba(0,212,255,.05))', border: '1px solid rgba(232,65,66,.2)', boxShadow: '0 0 60px rgba(232,65,66,.06)' }}>
+      <div className="absolute inset-0 opacity-[.04] pointer-events-none" style={{ backgroundImage:'linear-gradient(rgba(232,65,66,.6) 1px,transparent 1px),linear-gradient(90deg,rgba(232,65,66,.6) 1px,transparent 1px)', backgroundSize:'28px 28px' }} />
 
       <div className="relative">
         <div className="flex items-center justify-between mb-4">
@@ -580,8 +545,8 @@ const WalletInfoCard = () => {
         <div className="mb-5">
           <p className="text-gray-500 text-xs uppercase tracking-widest mb-1">Balance</p>
           <div className="flex items-end gap-2">
-            <span className="text-4xl font-black text-white" style={{ fontFamily:"'Orbitron',sans-serif" }}>{eth}</span>
-            <span className="text-gray-400 text-lg mb-0.5">{balance?.symbol || 'ETH'}</span>
+            <span className="text-4xl font-black text-white" style={{ fontFamily:"'Orbitron',sans-serif" }}>{bal}</span>
+            <span className="text-gray-400 text-lg mb-0.5">{balance?.symbol || 'AVAX'}</span>
           </div>
         </div>
 
@@ -591,15 +556,15 @@ const WalletInfoCard = () => {
           <span className="text-gray-500 text-xs tracking-wider">Address</span>
           <div className="flex items-center gap-2">
             <span className="text-white text-sm font-mono">{short}</span>
-            <span className="text-xs" style={{ color: copied?'#00D4FF':'#555' }}>{copied?'✓':'⎘'}</span>
+            <span className="text-xs" style={{ color: copied?'#E84142':'#555' }}>{copied?'✓':'⎘'}</span>
           </div>
         </button>
 
-        <a href={`https://etherscan.io/address/${address}`} target="_blank" rel="noopener noreferrer"
+        <a href={`${explorerUrl}/address/${address}`} target="_blank" rel="noopener noreferrer"
           className="w-full flex items-center justify-between px-4 py-2.5 rounded-xl mb-4 transition-colors hover:bg-white hover:bg-opacity-5"
           style={{ background:'rgba(255,255,255,.04)', border:'1px solid rgba(255,255,255,.06)', display:'flex' }}>
-          <span className="text-gray-500 text-xs tracking-wider">Etherscan</span>
-          <span className="text-xs" style={{ color:'#00D4FF' }}>View ↗</span>
+          <span className="text-gray-500 text-xs tracking-wider">Snowtrace</span>
+          <span className="text-xs" style={{ color:'#E84142' }}>View ↗</span>
         </a>
 
         <button onClick={disconnect}
@@ -628,7 +593,7 @@ const NetworkSwitcher = () => {
 
   return (
     <div ref={ref} className="rounded-3xl p-5"
-      style={{ background:'linear-gradient(145deg,rgba(13,17,23,.97),rgba(22,30,46,.97))', border:'1px solid rgba(0,212,255,.15)' }}>
+      style={{ background:'linear-gradient(145deg,rgba(13,17,23,.97),rgba(22,30,46,.97))', border:'1px solid rgba(232,65,66,.15)' }}>
       <h3 className="text-white font-black text-base mb-4 tracking-widest" style={{ fontFamily:"'Orbitron',sans-serif" }}>NETWORKS</h3>
       <div className="grid grid-cols-2 gap-2">
         {chains.map(chain => {
@@ -661,37 +626,517 @@ const ConnectModal = ({ onClose }) => {
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
       style={{ background:'rgba(0,0,0,.88)', backdropFilter:'blur(12px)' }}>
       <div ref={ref} className="w-full max-w-sm rounded-3xl p-7 relative overflow-hidden"
-        style={{ background:'linear-gradient(145deg,#0D1117,#161E2E)', border:'1px solid rgba(0,212,255,.2)', boxShadow:'0 0 100px rgba(0,212,255,.12)' }}>
-        <div className="absolute -top-20 left-1/2 -translate-x-1/2 w-48 h-48 rounded-full opacity-20 blur-3xl pointer-events-none" style={{ background:'#00D4FF' }} />
+        style={{ background:'linear-gradient(145deg,#0D1117,#161E2E)', border:'1px solid rgba(232,65,66,.2)', boxShadow:'0 0 100px rgba(232,65,66,.12)' }}>
+        <div className="absolute -top-20 left-1/2 -translate-x-1/2 w-48 h-48 rounded-full opacity-20 blur-3xl pointer-events-none" style={{ background:'#E84142' }} />
 
         <div className="relative">
           <div className="flex items-center justify-between mb-2">
             <h2 className="text-white font-black text-2xl" style={{ fontFamily:"'Orbitron',sans-serif" }}>CONNECT</h2>
             <button onClick={onClose} className="text-gray-600 hover:text-white text-2xl leading-none transition-colors">×</button>
           </div>
-          <p className="text-gray-500 text-sm mb-6">Choose a wallet provider to connect</p>
+          <p className="text-gray-500 text-sm mb-6">Choose a wallet to connect to AgentSwap AI</p>
 
           <div className="space-y-2.5">
             {connectors.map(c => (
               <button key={c.uid} onClick={() => { connect({ connector: c }); onClose() }} disabled={isPending}
                 className="w-full flex items-center gap-4 p-4 rounded-2xl transition-all hover:scale-[1.02] active:scale-[.98] group"
                 style={{ background:'rgba(255,255,255,.04)', border:'1px solid rgba(255,255,255,.07)' }}
-                onMouseEnter={e => e.currentTarget.style.borderColor='rgba(0,212,255,.3)'}
+                onMouseEnter={e => e.currentTarget.style.borderColor='rgba(232,65,66,.3)'}
                 onMouseLeave={e => e.currentTarget.style.borderColor='rgba(255,255,255,.07)'}>
                 {getWalletIcon(c.name)}
                 <div className="text-left flex-1">
                   <div className="text-white font-semibold text-sm">{c.name}</div>
                   <div className="text-gray-500 text-xs mt-0.5">Click to connect</div>
                 </div>
-                <span className="text-gray-600 group-hover:text-cyan-400 transition-colors text-lg">→</span>
+                <span className="text-gray-600 group-hover:text-red-400 transition-colors text-lg">→</span>
               </button>
             ))}
           </div>
 
           <p className="text-gray-600 text-xs text-center mt-6 leading-relaxed">
-            By connecting, you agree to our Terms of Service and acknowledge that you have read our Privacy Policy.
+            By connecting, you agree to use AgentSwap AI on Avalanche responsibly.
           </p>
         </div>
+      </div>
+    </div>
+  )
+}
+
+// ─── Settings Modal (API Key) ────────────────────────────────────────────────────
+const SettingsModal = ({ onClose }) => {
+  const [key, setKey] = useState(localStorage.getItem('agentswap_api_key') || '')
+  const [saved, setSaved] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    gsap.fromTo(ref.current, { opacity:0, scale:.92, y:24 }, { opacity:1, scale:1, y:0, duration:.4, ease:'back.out(1.6)' })
+  }, [])
+
+  const handleSave = () => {
+    localStorage.setItem('agentswap_api_key', key)
+    setSaved(true)
+    setTimeout(() => { setSaved(false); onClose() }, 1000)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background:'rgba(0,0,0,.88)', backdropFilter:'blur(12px)' }}>
+      <div ref={ref} className="w-full max-w-md rounded-3xl p-7 relative overflow-hidden"
+        style={{ background:'linear-gradient(145deg,#0D1117,#161E2E)', border:'1px solid rgba(0,212,255,.2)', boxShadow:'0 0 100px rgba(0,212,255,.08)' }}>
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-white font-black text-xl" style={{ fontFamily:"'Orbitron',sans-serif" }}>⚙️ SETTINGS</h2>
+          <button onClick={onClose} className="text-gray-600 hover:text-white text-2xl leading-none transition-colors">×</button>
+        </div>
+
+        <div className="mb-4">
+          <label className="text-gray-400 text-xs uppercase tracking-widest mb-2 block">Google Gemini API Key</label>
+          <input
+            type="password"
+            value={key}
+            onChange={e => setKey(e.target.value)}
+            placeholder="AIza..."
+            className="w-full bg-transparent text-white text-sm px-4 py-3 rounded-xl outline-none placeholder-gray-700"
+            style={{ border: '1px solid rgba(255,255,255,.1)', background: 'rgba(255,255,255,.03)' }}
+          />
+          <p className="text-gray-600 text-xs mt-2 leading-relaxed">
+            Get your free API key at{' '}
+            <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener noreferrer" className="underline" style={{ color: '#00D4FF' }}>
+              Google AI Studio
+            </a>
+            . Your key is stored locally and never sent to our servers.
+          </p>
+        </div>
+
+        <button onClick={handleSave}
+          className="w-full py-3 rounded-xl font-bold text-sm tracking-widest uppercase transition-all hover:scale-[1.02]"
+          style={{ background: saved ? 'rgba(52,211,153,.2)' : 'linear-gradient(135deg, #00D4FF, #0099CC)', color: saved ? '#34D399' : '#000', fontFamily:"'Orbitron',sans-serif" }}>
+          {saved ? '✓ Saved!' : 'Save Key'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ─── Payment Link Modal ──────────────────────────────────────────────────────────
+const PaymentLinkModal = ({ onClose }) => {
+  const { address } = useAccount()
+  const [amount, setAmount] = useState('')
+  const [token, setToken] = useState('AVAX')
+  const [copied, setCopied] = useState(false)
+  const ref = useRef(null)
+
+  useEffect(() => {
+    gsap.fromTo(ref.current, { opacity:0, scale:.92, y:24 }, { opacity:1, scale:1, y:0, duration:.4, ease:'back.out(1.6)' })
+  }, [])
+
+  const link = `${window.location.origin}/?pay=true&amount=${amount}&token=${token}${address ? `&to=${address}` : ''}`
+
+  const handleCopy = () => {
+    navigator.clipboard?.writeText(link)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background:'rgba(0,0,0,.88)', backdropFilter:'blur(12px)' }}>
+      <div ref={ref} className="w-full max-w-md rounded-3xl p-7 relative overflow-hidden"
+        style={{ background:'linear-gradient(145deg,#0D1117,#161E2E)', border:'1px solid rgba(232,65,66,.2)', boxShadow:'0 0 100px rgba(232,65,66,.08)' }}>
+        <div className="flex items-center justify-between mb-6">
+          <h2 className="text-white font-black text-xl" style={{ fontFamily:"'Orbitron',sans-serif" }}>🔗 PAYMENT LINK</h2>
+          <button onClick={onClose} className="text-gray-600 hover:text-white text-2xl leading-none transition-colors">×</button>
+        </div>
+
+        <p className="text-gray-400 text-sm mb-5">Create a shareable link so anyone can send you a payment on Avalanche.</p>
+
+        <div className="space-y-3 mb-5">
+          <div>
+            <label className="text-gray-500 text-xs uppercase tracking-widest mb-1.5 block">Amount</label>
+            <input type="number" value={amount} onChange={e => setAmount(e.target.value)} placeholder="10"
+              className="w-full bg-transparent text-white text-lg px-4 py-3 rounded-xl outline-none placeholder-gray-700"
+              style={{ border: '1px solid rgba(255,255,255,.1)', background: 'rgba(255,255,255,.03)', fontFamily:"'Orbitron',sans-serif" }} />
+          </div>
+          <div>
+            <label className="text-gray-500 text-xs uppercase tracking-widest mb-1.5 block">Token</label>
+            <div className="flex gap-2 flex-wrap">
+              {['AVAX','USDC','USDT'].map(t => (
+                <button key={t} onClick={() => setToken(t)}
+                  className="px-4 py-2 rounded-xl text-sm font-bold transition-all"
+                  style={{ background: token===t?'rgba(232,65,66,.15)':'rgba(255,255,255,.04)', border: `1px solid ${token===t?'rgba(232,65,66,.3)':'rgba(255,255,255,.06)'}`, color: token===t?'#E84142':'#666' }}>
+                  {t}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {amount && (
+          <div className="mb-4 rounded-xl p-3" style={{ background: 'rgba(255,255,255,.03)', border: '1px solid rgba(255,255,255,.06)' }}>
+            <p className="text-gray-500 text-xs mb-1">Preview Link:</p>
+            <p className="text-xs text-gray-300 font-mono break-all">{link}</p>
+          </div>
+        )}
+
+        <button onClick={handleCopy} disabled={!amount}
+          className="w-full py-3 rounded-xl font-bold text-sm tracking-widest uppercase transition-all hover:scale-[1.02]"
+          style={{ background: copied?'rgba(52,211,153,.2)':(!amount?'rgba(232,65,66,.07)':'linear-gradient(135deg, #E84142, #C73536)'), color: copied?'#34D399':(!amount?'#E8414233':'#fff'), fontFamily:"'Orbitron',sans-serif" }}>
+          {copied ? '✓ Copied!' : 'Copy Payment Link'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ─── AI Chat Components ──────────────────────────────────────────────────────────
+const ThinkingIndicator = () => (
+  <div className="flex justify-start">
+    <div className="rounded-2xl px-4 py-3" style={{ background: 'rgba(255,255,255,.04)', border: '1px solid rgba(255,255,255,.06)' }}>
+      <div className="flex items-center gap-2">
+        <div className="flex gap-1.5">
+          {[0, 1, 2].map(i => (
+            <div key={i} className="w-2 h-2 rounded-full"
+              style={{ background: '#00D4FF', animation: `thinking 1.4s ease-in-out ${i * 0.2}s infinite` }} />
+          ))}
+        </div>
+        <span className="text-gray-500 text-xs ml-1">Analyzing...</span>
+      </div>
+    </div>
+  </div>
+)
+
+const ChatMessage = ({ message, onExecute, onQuickAction, quickActions }) => {
+  const isUser = message.role === 'user'
+  const ref = useRef(null)
+
+  useEffect(() => {
+    if (ref.current) {
+      gsap.fromTo(ref.current, { opacity: 0, y: 10, scale: 0.97 }, { opacity: 1, y: 0, scale: 1, duration: 0.3, ease: 'power2.out' })
+    }
+  }, [])
+
+  return (
+    <div ref={ref} className={`flex ${isUser ? 'justify-end' : 'justify-start'}`}>
+      <div className={`max-w-[88%] rounded-2xl px-4 py-3`}
+        style={{
+          background: isUser ? 'linear-gradient(135deg, rgba(232,65,66,.15), rgba(232,65,66,.08))' : 'rgba(255,255,255,.04)',
+          border: `1px solid ${isUser ? 'rgba(232,65,66,.2)' : 'rgba(255,255,255,.06)'}`,
+        }}>
+
+        {!isUser && (
+          <div className="flex items-center gap-1.5 mb-2">
+            <span className="text-xs">🤖</span>
+            <span className="text-xs font-bold tracking-wider" style={{ color: '#00D4FF' }}>AgentSwap AI</span>
+          </div>
+        )}
+
+        <p className="text-sm text-gray-300 whitespace-pre-wrap leading-relaxed">{message.content}</p>
+
+        {/* Transaction Plan Card */}
+        {message.type === 'action' && message.intent && (
+          <div className="mt-3 rounded-xl p-4" style={{ background: 'rgba(0,212,255,.05)', border: '1px solid rgba(0,212,255,.15)' }}>
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-xs font-bold tracking-wider uppercase" style={{ color: '#00D4FF' }}>
+                {message.intent.action === 'swap' ? '🔄 Swap Plan' : message.intent.action === 'send' ? '📤 Send Plan' : '🔄 Convert Plan'}
+              </span>
+              <span className="text-xs px-2 py-0.5 rounded-full"
+                style={{
+                  background: `rgba(${message.intent.confidence > 0.8 ? '52,211,153' : '250,204,21'},.15)`,
+                  color: message.intent.confidence > 0.8 ? '#34D399' : '#FACC15',
+                  border: `1px solid rgba(${message.intent.confidence > 0.8 ? '52,211,153' : '250,204,21'},.25)`
+                }}>
+                {Math.round(message.intent.confidence * 100)}% match
+              </span>
+            </div>
+
+            {(message.intent.fromToken || message.intent.toToken) && (
+              <div className="flex items-center gap-3 mb-3 py-2">
+                {message.intent.fromToken && (
+                  <div className="flex items-center gap-2">
+                    <TokenIcon symbol={message.intent.fromToken} color={TOKENS.find(t=>t.symbol===message.intent.fromToken)?.color || '#888'} size="w-6 h-6" />
+                    <span className="text-white font-bold text-sm">{message.intent.amount}{message.intent.isUSD ? ' USD of' : ''} {message.intent.fromToken}</span>
+                  </div>
+                )}
+                {message.intent.toToken && (
+                  <>
+                    <span className="text-gray-500 text-lg">→</span>
+                    <div className="flex items-center gap-2">
+                      <TokenIcon symbol={message.intent.toToken} color={TOKENS.find(t=>t.symbol===message.intent.toToken)?.color || '#888'} size="w-6 h-6" />
+                      <span className="text-white font-bold text-sm">{message.intent.toToken}</span>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            <div className="flex gap-2">
+              <button onClick={onExecute}
+                className="flex-1 py-2.5 rounded-lg text-xs font-bold tracking-wider uppercase transition-all hover:scale-[1.02]"
+                style={{ background: 'linear-gradient(135deg, #E84142, #C73536)', color: '#fff' }}>
+                ⚡ Execute
+              </button>
+              <button onClick={onExecute}
+                className="px-4 py-2.5 rounded-lg text-xs font-bold tracking-wider uppercase transition-all hover:scale-[1.02]"
+                style={{ background: 'rgba(255,255,255,.05)', border: '1px solid rgba(255,255,255,.1)', color: '#888' }}>
+                Edit
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Insights */}
+        {message.insights && message.insights.length > 0 && (
+          <div className="mt-2.5 space-y-1.5">
+            {message.insights.map((tip, i) => (
+              <div key={i} className="flex items-start gap-2 text-xs text-gray-500">
+                <span className="flex-shrink-0" style={{ color: '#F5AC37' }}>💡</span>
+                <span>{tip}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* Quick actions */}
+        {quickActions && (
+          <div className="mt-3 flex flex-wrap gap-2">
+            {quickActions.map((action, i) => (
+              <button key={i} onClick={() => onQuickAction(action)}
+                className="text-xs px-3 py-1.5 rounded-full transition-all hover:scale-105 hover:bg-opacity-20"
+                style={{ background: 'rgba(232,65,66,.1)', border: '1px solid rgba(232,65,66,.2)', color: '#E84142' }}>
+                {action}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ─── AI Assistant Panel ──────────────────────────────────────────────────────────
+const AIAssistantPanel = ({ onIntent, isConnected }) => {
+  const [messages, setMessages] = useState([
+    {
+      role: 'assistant',
+      content: "👋 Welcome to AgentSwap AI!\n\nI'm your intelligent DeFi assistant on Avalanche. Tell me what you need in plain English:\n\n• \"Swap 50 USDC to AVAX\"\n• \"Send $10 worth of AVAX\"\n• \"Convert my tokens to stablecoins\"\n• \"What's the cheapest swap route?\"",
+      type: 'welcome',
+      insights: [],
+    }
+  ])
+  const [input, setInput] = useState('')
+  const [isThinking, setIsThinking] = useState(false)
+  const chatEndRef = useRef(null)
+
+  const quickActions = [
+    'Swap 50 USDC to AVAX',
+    'Send $10 AVAX',
+    'Convert to stablecoins',
+    'Best swap route?',
+  ]
+
+  const handleSend = useCallback(async (text) => {
+    const message = (text || input).trim()
+    if (!message) return
+
+    const apiKey = localStorage.getItem('agentswap_api_key')
+    if (!apiKey) {
+      setMessages(prev => [...prev,
+        { role: 'user', content: message, type: 'text' },
+        { role: 'assistant', content: '⚠️ Please set your Gemini API key first!\n\nClick the ⚙️ Settings icon in the top navigation bar to add your free Google Gemini API key.', type: 'error', insights: ['Get a free key at aistudio.google.com/apikey'] }
+      ])
+      if (!text) setInput('')
+      return
+    }
+
+    setMessages(prev => [...prev, { role: 'user', content: message, type: 'text' }])
+    if (!text) setInput('')
+    setIsThinking(true)
+
+    try {
+      const result = await parseWithLLM(message, apiKey)
+
+      const aiMessage = {
+        role: 'assistant',
+        content: result.message,
+        type: (result.action === 'swap' || result.action === 'convert' || result.action === 'send') && result.confidence > 0.5 ? 'action' : 'text',
+        intent: result,
+        insights: result.insights || [],
+      }
+
+      setMessages(prev => [...prev, aiMessage])
+
+      if (result.action !== 'query' && result.confidence > 0.5) {
+        onIntent(result)
+      }
+    } catch (err) {
+      setMessages(prev => [...prev, {
+        role: 'assistant',
+        content: `Something went wrong: ${err.message}`,
+        type: 'error',
+        insights: ['Try rephrasing your command'],
+      }])
+    } finally {
+      setIsThinking(false)
+    }
+  }, [input, onIntent])
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, isThinking])
+
+  return (
+    <div className="rounded-3xl flex flex-col relative overflow-hidden"
+      style={{ background: 'linear-gradient(145deg,rgba(13,17,23,.97),rgba(22,30,46,.97))', border: '1px solid rgba(0,212,255,.15)', height: 'calc(100vh - 200px)', minHeight: '500px', maxHeight: '750px' }}>
+
+      {/* Header */}
+      <div className="px-5 py-4 flex items-center gap-3 flex-shrink-0" style={{ borderBottom: '1px solid rgba(255,255,255,.06)' }}>
+        <div className="w-8 h-8 rounded-lg flex items-center justify-center text-sm"
+          style={{ background: 'linear-gradient(135deg, #E84142, #00D4FF)' }}>🤖</div>
+        <div>
+          <h3 className="text-white font-bold text-sm tracking-wider" style={{ fontFamily: "'Orbitron',sans-serif" }}>AI ASSISTANT</h3>
+          <p className="text-gray-600 text-xs">Powered by Gemini • Avalanche</p>
+        </div>
+        <div className="ml-auto flex items-center gap-1.5">
+          <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
+          <span className="text-emerald-400 text-xs font-medium">Online</span>
+        </div>
+      </div>
+
+      {/* Messages */}
+      <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4" style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(0,212,255,.2) transparent' }}>
+        {messages.map((msg, i) => (
+          <ChatMessage key={i} message={msg} onExecute={() => msg.intent && onIntent(msg.intent)} onQuickAction={handleSend} quickActions={i === 0 ? quickActions : null} />
+        ))}
+
+        {isThinking && <ThinkingIndicator />}
+        <div ref={chatEndRef} />
+      </div>
+
+      {/* Input */}
+      <div className="px-4 py-3 flex-shrink-0" style={{ borderTop: '1px solid rgba(255,255,255,.06)' }}>
+        <form onSubmit={e => { e.preventDefault(); handleSend() }} className="flex items-center gap-2 rounded-2xl px-4 py-3"
+          style={{ background: 'rgba(255,255,255,.04)', border: '1px solid rgba(255,255,255,.08)' }}>
+          <input
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            placeholder={isConnected ? 'Tell me what you need...' : 'Connect wallet to start...'}
+            disabled={!isConnected || isThinking}
+            className="flex-1 bg-transparent text-white text-sm outline-none placeholder-gray-600"
+          />
+          <button
+            type="submit"
+            disabled={!input.trim() || !isConnected || isThinking}
+            className="w-8 h-8 rounded-lg flex items-center justify-center text-sm font-bold transition-all hover:scale-110 flex-shrink-0"
+            style={{
+              background: input.trim() ? 'linear-gradient(135deg, #E84142, #00D4FF)' : 'rgba(255,255,255,.05)',
+              color: input.trim() ? '#fff' : '#333',
+            }}>
+            →
+          </button>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+// ─── AI Insights Bar ─────────────────────────────────────────────────────────────
+const AIInsightsBar = ({ tokenIn, tokenOut, amountIn }) => {
+  const insights = []
+
+  if (amountIn && parseFloat(amountIn) > 1000) {
+    insights.push({ icon: '⚠️', text: 'Large swap detected. Consider splitting into smaller transactions for better rates and less slippage.', type: 'warning' })
+  }
+
+  if (tokenIn?.symbol === 'AVAX' || tokenOut?.symbol === 'AVAX') {
+    insights.push({ icon: '⚡', text: 'AVAX swaps settle in under 2 seconds on Avalanche with minimal gas fees.', type: 'info' })
+  }
+
+  if (tokenOut?.symbol === 'USDC' || tokenOut?.symbol === 'USDT') {
+    insights.push({ icon: '🛡️', text: 'Swapping to a stablecoin — great for locking in value during volatility.', type: 'info' })
+  }
+
+  insights.push({ icon: '🔀', text: 'Routing via Trader Joe V2.1 for best rates on Avalanche.', type: 'info' })
+
+  return (
+    <div className="rounded-2xl p-4" style={{ background: 'rgba(0,212,255,.04)', border: '1px solid rgba(0,212,255,.1)' }}>
+      <h4 className="text-xs font-bold tracking-wider uppercase mb-2.5 flex items-center gap-2" style={{ color: '#00D4FF', fontFamily: "'Orbitron',sans-serif" }}>
+        <span>💡</span> AI INSIGHTS
+      </h4>
+      <div className="space-y-2">
+        {insights.map((ins, i) => (
+          <div key={i} className="flex items-start gap-2 text-xs text-gray-400 leading-relaxed">
+            <span className="flex-shrink-0 mt-0.5">{ins.icon}</span>
+            <span>{ins.text}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Dashboard Stats ─────────────────────────────────────────────────────────────
+const DashboardStats = ({ txHistory }) => {
+  const totalTxns = txHistory.length
+  const totalSwapped = txHistory.reduce((sum, tx) => sum + (parseFloat(tx.amountIn) || 0), 0)
+  const aiCommands = txHistory.filter(tx => tx.source === 'ai').length
+
+  const stats = [
+    { label: 'Total Transactions', value: totalTxns, icon: '📊', color: '#E84142' },
+    { label: 'Volume Swapped', value: totalSwapped > 0 ? totalSwapped.toFixed(2) : '0', icon: '💰', color: '#00D4FF' },
+    { label: 'AI Commands', value: aiCommands, icon: '🤖', color: '#7B2FBE' },
+  ]
+
+  return (
+    <div className="grid grid-cols-3 gap-3">
+      {stats.map((s, i) => (
+        <div key={i} className="rounded-2xl p-4 text-center relative overflow-hidden"
+          style={{ background: 'linear-gradient(145deg,rgba(13,17,23,.97),rgba(22,30,46,.97))', border: `1px solid ${s.color}22` }}>
+          <div className="text-2xl mb-1">{s.icon}</div>
+          <div className="text-white font-black text-lg" style={{ fontFamily: "'Orbitron',sans-serif" }}>{s.value}</div>
+          <div className="text-gray-500 text-xs mt-0.5">{s.label}</div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+// ─── Recent Activity ─────────────────────────────────────────────────────────────
+const RecentActivity = ({ txHistory, chainId }) => {
+  const explorerUrl = CHAIN_META[chainId]?.explorer || 'https://snowtrace.io'
+
+  if (txHistory.length === 0) {
+    return (
+      <div className="rounded-3xl p-5"
+        style={{ background: 'linear-gradient(145deg,rgba(13,17,23,.97),rgba(22,30,46,.97))', border: '1px solid rgba(232,65,66,.15)' }}>
+        <h3 className="text-white font-black text-base mb-3 tracking-widest" style={{ fontFamily: "'Orbitron',sans-serif" }}>ACTIVITY</h3>
+        <p className="text-gray-600 text-sm text-center py-6">No transactions yet. Use the AI assistant or swap panel to get started!</p>
+      </div>
+    )
+  }
+
+  return (
+    <div className="rounded-3xl p-5"
+      style={{ background: 'linear-gradient(145deg,rgba(13,17,23,.97),rgba(22,30,46,.97))', border: '1px solid rgba(232,65,66,.15)' }}>
+      <h3 className="text-white font-black text-base mb-3 tracking-widest" style={{ fontFamily: "'Orbitron',sans-serif" }}>ACTIVITY</h3>
+      <div className="space-y-2">
+        {txHistory.slice(0, 8).map(tx => (
+          <div key={tx.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl" style={{ background: 'rgba(255,255,255,.03)' }}>
+            <span className="text-lg">{tx.type === 'swap' ? '🔄' : '📤'}</span>
+            <div className="flex-1 min-w-0">
+              <div className="text-white text-sm font-medium truncate">
+                {tx.amountIn} {tx.fromToken} → {tx.amountOut || '?'} {tx.toToken}
+              </div>
+              <div className="text-gray-600 text-xs">{new Date(tx.timestamp).toLocaleString()}</div>
+            </div>
+            <span className="text-xs px-2 py-0.5 rounded-full"
+              style={{ background: 'rgba(52,211,153,.1)', color: '#34D399', border: '1px solid rgba(52,211,153,.2)' }}>
+              {tx.status}
+            </span>
+            {tx.txHash && (
+              <a href={`${explorerUrl}/tx/${tx.txHash}`} target="_blank" rel="noopener noreferrer"
+                className="text-xs hover:underline flex-shrink-0" style={{ color: '#E84142' }}>↗</a>
+            )}
+          </div>
+        ))}
       </div>
     </div>
   )
@@ -708,11 +1153,11 @@ const StatsTicker = ({ prices }) => {
   }, [prices])
 
   const data = [
-    { s:'ETH',  key:'ethereum',        c:'#627EEA' },
+    { s:'AVAX', key:'avalanche-2',     c:'#E84142' },
     { s:'BTC',  key:'wrapped-bitcoin', c:'#F7931A' },
-    { s:'UNI',  key:'uniswap',         c:'#FF007A' },
-    { s:'LINK', key:'chainlink',       c:'#2A5ADA' },
-    { s:'AAVE', key:'aave',            c:'#B6509E' },
+    { s:'ETH',  key:'weth',           c:'#627EEA' },
+    { s:'JOE',  key:'joe',            c:'#E3507A' },
+    { s:'USDC', key:'usd-coin',       c:'#2775CA' },
   ]
 
   return (
@@ -757,32 +1202,32 @@ const Hero = ({ onConnect }) => {
 
   return (
     <div ref={heroRef} className="relative flex flex-col items-center justify-center text-center py-14 overflow-hidden">
-      <div ref={orb1Ref} className="absolute top-0 left-1/4 w-80 h-80 rounded-full blur-3xl opacity-20 pointer-events-none" style={{ background:'radial-gradient(circle,#00D4FF,transparent)' }} />
-      <div ref={orb2Ref} className="absolute bottom-0 right-1/4 w-96 h-96 rounded-full blur-3xl opacity-15 pointer-events-none" style={{ background:'radial-gradient(circle,#7B2FBE,transparent)' }} />
+      <div ref={orb1Ref} className="absolute top-0 left-1/4 w-80 h-80 rounded-full blur-3xl opacity-20 pointer-events-none" style={{ background:'radial-gradient(circle,#E84142,transparent)' }} />
+      <div ref={orb2Ref} className="absolute bottom-0 right-1/4 w-96 h-96 rounded-full blur-3xl opacity-15 pointer-events-none" style={{ background:'radial-gradient(circle,#00D4FF,transparent)' }} />
 
       <div ref={titleRef} className="relative">
-        <p className="text-xs font-medium tracking-[.4em] uppercase mb-3" style={{ color:'#00D4FF', fontFamily:"'Orbitron',sans-serif" }}>
-          Decentralized Finance
+        <p className="text-xs font-medium tracking-[.4em] uppercase mb-3" style={{ color:'#E84142', fontFamily:"'Orbitron',sans-serif" }}>
+          AI-Powered DeFi on Avalanche
         </p>
         <h1 className="text-6xl md:text-8xl font-black mb-4 leading-none"
-          style={{ fontFamily:"'Orbitron',sans-serif", background:'linear-gradient(135deg,#fff 0%,#00D4FF 50%,#7B2FBE 100%)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>
-          WEB3<br />UNISWAP
+          style={{ fontFamily:"'Orbitron',sans-serif", background:'linear-gradient(135deg,#fff 0%,#E84142 50%,#00D4FF 100%)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>
+          AGENT<br />SWAP AI
         </h1>
       </div>
 
-      <p ref={subRef} className="text-gray-400 text-base max-w-sm mb-8 leading-relaxed">
-        Trade, manage & explore the decentralized web. Connect your wallet to swap tokens and monitor your DeFi portfolio.
+      <p ref={subRef} className="text-gray-400 text-base max-w-md mb-8 leading-relaxed">
+        Talk to DeFi in plain English. Swap tokens, send payments, and navigate the Avalanche ecosystem with your AI assistant.
       </p>
 
       <div ref={btnRef}>
         {!isConnected ? (
           <button onClick={onConnect}
             className="px-8 py-4 rounded-2xl font-black text-sm tracking-widest uppercase transition-all hover:scale-105 hover:brightness-110"
-            style={{ background:'linear-gradient(135deg,#00D4FF,#0099CC)', color:'#000', fontFamily:"'Orbitron',sans-serif", boxShadow:'0 0 35px rgba(0,212,255,.45)' }}>
+            style={{ background:'linear-gradient(135deg,#E84142,#C73536)', color:'#fff', fontFamily:"'Orbitron',sans-serif", boxShadow:'0 0 35px rgba(232,65,66,.45)' }}>
             Launch App →
           </button>
         ) : (
-          <div className="flex items-center gap-2 px-5 py-3 rounded-2xl" style={{ background:'rgba(0,212,255,.1)', border:'1px solid rgba(0,212,255,.3)' }}>
+          <div className="flex items-center gap-2 px-5 py-3 rounded-2xl" style={{ background:'rgba(232,65,66,.1)', border:'1px solid rgba(232,65,66,.3)' }}>
             <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
             <span className="text-emerald-400 text-sm font-medium tracking-wide">Wallet Connected — Scroll to dashboard</span>
           </div>
@@ -805,9 +1250,7 @@ const FeatureCard = ({ icon, title, desc, index }) => {
 
   return (
     <div ref={ref} className="rounded-3xl p-6 relative overflow-hidden transition-all duration-300 hover:-translate-y-1.5 group"
-      style={{ background:'linear-gradient(145deg,rgba(13,17,23,.97),rgba(22,30,46,.97))', border:'1px solid rgba(0,212,255,.08)' }}
-      onMouseEnter={e => gsap.to(e.currentTarget, { '--border-opacity': .3, duration:.3 })}
-      onMouseLeave={e => gsap.to(e.currentTarget, { '--border-opacity': .08, duration:.3 })}>
+      style={{ background:'linear-gradient(145deg,rgba(13,17,23,.97),rgba(22,30,46,.97))', border:'1px solid rgba(232,65,66,.08)' }}>
       <div className="text-4xl mb-4">{icon}</div>
       <h3 className="text-white font-black text-base mb-2 tracking-wide" style={{ fontFamily:"'Orbitron',sans-serif" }}>{title}</h3>
       <p className="text-gray-500 text-sm leading-relaxed">{desc}</p>
@@ -815,11 +1258,163 @@ const FeatureCard = ({ icon, title, desc, index }) => {
   )
 }
 
-// ─── Dashboard ───────────────────────────────────────────────────────────────────
+// ─── How It Works ────────────────────────────────────────────────────────────────
+const HowItWorks = () => {
+  const ref = useRef(null)
+  useEffect(() => {
+    if (!ref.current) return
+    gsap.fromTo(ref.current.querySelectorAll('.step'), { opacity:0, y:30 }, {
+      opacity:1, y:0, duration:.5, stagger:.15, ease:'power3.out',
+      scrollTrigger: { trigger: ref.current, start:'top 85%' },
+    })
+  }, [])
+
+  const steps = [
+    { num: '01', icon: '🔗', title: 'Connect Wallet', desc: 'Link your MetaMask or any Web3 wallet to Avalanche.' },
+    { num: '02', icon: '💬', title: 'Talk to AI', desc: 'Type a command like "Swap 50 USDC to AVAX" in plain English.' },
+    { num: '03', icon: '📋', title: 'Review Plan', desc: 'AI generates a transaction plan with tokens, amounts, and fees.' },
+    { num: '04', icon: '⚡', title: 'Execute', desc: 'Confirm and execute on Avalanche in under 2 seconds.' },
+  ]
+
+  return (
+    <div ref={ref} className="mt-20 mb-16">
+      <h2 className="text-center text-white font-black text-2xl mb-2 tracking-widest" style={{ fontFamily:"'Orbitron',sans-serif" }}>HOW IT WORKS</h2>
+      <p className="text-center text-gray-500 text-sm mb-10">Four simple steps to AI-powered DeFi</p>
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        {steps.map((s, i) => (
+          <div key={i} className="step rounded-2xl p-5 text-center relative"
+            style={{ background: 'rgba(255,255,255,.03)', border: '1px solid rgba(255,255,255,.06)' }}>
+            <div className="text-3xl mb-3">{s.icon}</div>
+            <div className="text-xs font-bold tracking-widest mb-2" style={{ color: '#E84142', fontFamily: "'Orbitron',sans-serif" }}>STEP {s.num}</div>
+            <h4 className="text-white font-bold text-sm mb-1">{s.title}</h4>
+            <p className="text-gray-500 text-xs leading-relaxed">{s.desc}</p>
+            {i < 3 && <div className="hidden md:block absolute top-1/2 -right-3 text-gray-700 text-lg">→</div>}
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Why Avalanche ───────────────────────────────────────────────────────────────
+const WhyAvalanche = () => {
+  const ref = useRef(null)
+  useEffect(() => {
+    if (!ref.current) return
+    gsap.fromTo(ref.current, { opacity:0, y:40 }, {
+      opacity:1, y:0, duration:.7, ease:'power3.out',
+      scrollTrigger: { trigger: ref.current, start:'top 85%' },
+    })
+  }, [])
+
+  const reasons = [
+    { icon: '⚡', stat: '<2s', label: 'Finality', desc: 'Sub-second transaction finality for instant swaps.' },
+    { icon: '💸', stat: '<$0.05', label: 'Gas Fees', desc: 'Near-zero gas fees make micro-payments viable.' },
+    { icon: '🔒', stat: '1000+', label: 'Validators', desc: 'Highly decentralized and secure network.' },
+    { icon: '🌐', stat: 'EVM', label: 'Compatible', desc: 'Full Ethereum compatibility. Bring your favorite tools.' },
+  ]
+
+  return (
+    <div ref={ref} className="mb-16 rounded-3xl p-8 relative overflow-hidden"
+      style={{ background: 'linear-gradient(135deg, rgba(232,65,66,.06), rgba(0,212,255,.04))', border: '1px solid rgba(232,65,66,.15)' }}>
+      <div className="absolute -top-20 -right-20 w-60 h-60 rounded-full opacity-10 blur-3xl pointer-events-none" style={{ background: '#E84142' }} />
+      <h2 className="text-white font-black text-2xl mb-2 tracking-widest" style={{ fontFamily:"'Orbitron',sans-serif" }}>WHY AVALANCHE?</h2>
+      <p className="text-gray-500 text-sm mb-8">The fastest, cheapest, and most scalable blockchain for DeFi.</p>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        {reasons.map((r, i) => (
+          <div key={i} className="text-center p-4">
+            <div className="text-3xl mb-2">{r.icon}</div>
+            <div className="text-2xl font-black text-white mb-0.5" style={{ fontFamily:"'Orbitron',sans-serif" }}>{r.stat}</div>
+            <div className="text-xs font-bold tracking-wider uppercase mb-1" style={{ color: '#E84142' }}>{r.label}</div>
+            <p className="text-gray-500 text-xs leading-relaxed">{r.desc}</p>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Supported Tokens ────────────────────────────────────────────────────────────
+const SupportedTokens = () => {
+  const ref = useRef(null)
+  useEffect(() => {
+    if (!ref.current) return
+    gsap.fromTo(ref.current.querySelectorAll('.token-card'), { opacity:0, scale:.9 }, {
+      opacity:1, scale:1, duration:.4, stagger:.08, ease:'back.out(1.4)',
+      scrollTrigger: { trigger: ref.current, start:'top 85%' },
+    })
+  }, [])
+
+  return (
+    <div ref={ref} className="mb-16">
+      <h2 className="text-center text-white font-black text-2xl mb-2 tracking-widest" style={{ fontFamily:"'Orbitron',sans-serif" }}>SUPPORTED TOKENS</h2>
+      <p className="text-center text-gray-500 text-sm mb-8">Trade the top tokens on Avalanche</p>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {TOKENS.map(token => (
+          <div key={token.symbol} className="token-card flex items-center gap-3 p-4 rounded-2xl transition-all hover:scale-[1.03]"
+            style={{ background: 'rgba(255,255,255,.03)', border: `1px solid ${token.color}22` }}>
+            <TokenIcon symbol={token.symbol} color={token.color} size="w-10 h-10" />
+            <div>
+              <div className="text-white font-bold text-sm">{token.symbol}</div>
+              <div className="text-gray-500 text-xs">{token.name}</div>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ─── Dashboard (Main Layout) ─────────────────────────────────────────────────────
 const Dashboard = () => {
   const { isConnected, address } = useAccount()
+  const chainId = useChainId()
   const [showModal, setShowModal] = useState(false)
+  const [showSettings, setShowSettings] = useState(false)
+  const [showPayLink, setShowPayLink] = useState(false)
+  const [aiIntent, setAiIntent] = useState(null)
+  const [txHistory, setTxHistory] = useState([])
   const { data: prices } = useTokenPrices()
+
+  // Load tx history from localStorage
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem('agentswap_tx_history')
+      if (stored) setTxHistory(JSON.parse(stored))
+    } catch {}
+  }, [])
+
+  // Handle payment links from URL
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('pay')) {
+      const amount = params.get('amount')
+      const token = params.get('token') || 'AVAX'
+      if (amount) {
+        setAiIntent({
+          action: 'send',
+          fromToken: token,
+          toToken: null,
+          amount: parseFloat(amount),
+          isUSD: false,
+          recipient: params.get('to') || null,
+          message: `Payment request: ${amount} ${token}`,
+          insights: ['This is a payment request from a shared link'],
+          confidence: 1,
+        })
+      }
+    }
+  }, [])
+
+  const handleIntent = useCallback((intent) => {
+    setAiIntent(intent)
+  }, [])
+
+  const handleSwapComplete = useCallback((tx) => {
+    const updated = [{ ...tx, source: aiIntent ? 'ai' : 'manual' }, ...txHistory].slice(0, 50)
+    setTxHistory(updated)
+    localStorage.setItem('agentswap_tx_history', JSON.stringify(updated))
+  }, [txHistory, aiIntent])
 
   return (
     <div className="min-h-screen text-white"
@@ -830,67 +1425,127 @@ const Dashboard = () => {
         *{box-sizing:border-box}
         ::-webkit-scrollbar{width:5px}
         ::-webkit-scrollbar-track{background:#050810}
-        ::-webkit-scrollbar-thumb{background:rgba(0,212,255,.25);border-radius:4px}
+        ::-webkit-scrollbar-thumb{background:rgba(232,65,66,.25);border-radius:4px}
         input[type=number]::-webkit-inner-spin-button{-webkit-appearance:none}
         input[type=number]{-moz-appearance:textfield}
+        @keyframes thinking{
+          0%,60%,100%{opacity:.3;transform:translateY(0)}
+          30%{opacity:1;transform:translateY(-4px)}
+        }
       `}</style>
 
-      <div className="max-w-6xl mx-auto px-4 pb-24">
+      <div className="max-w-7xl mx-auto px-4 pb-24">
         {/* Nav */}
         <nav className="flex items-center justify-between py-6 mb-2">
           <div className="flex items-center gap-2.5">
-            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-black font-black"
-              style={{ background:'linear-gradient(135deg,#00D4FF,#7B2FBE)', fontSize:14 }}>
-                <img src="/web3_icon.png" className='p-1' alt="icon" />
-              </div>
+            <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white font-black text-sm"
+              style={{ background:'linear-gradient(135deg,#E84142,#00D4FF)' }}>
+              ⚡
+            </div>
             <span className="font-black text-lg tracking-widest"
-              style={{ fontFamily:"'Orbitron',sans-serif", background:'linear-gradient(90deg,#00D4FF,#7B2FBE)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>
-              UniSwap
+              style={{ fontFamily:"'Orbitron',sans-serif", background:'linear-gradient(90deg,#E84142,#00D4FF)', WebkitBackgroundClip:'text', WebkitTextFillColor:'transparent' }}>
+              AgentSwap
             </span>
           </div>
 
-          {!isConnected ? (
-            <button onClick={() => setShowModal(true)}
-              className="px-5 py-2.5 rounded-xl font-black text-xs tracking-widest uppercase transition-all hover:scale-105"
-              style={{ background:'linear-gradient(135deg,#00D4FF,#0099CC)', color:'#000', fontFamily:"'Orbitron',sans-serif", boxShadow:'0 0 20px rgba(0,212,255,.3)' }}>
-              Connect Wallet
+          <div className="flex items-center gap-3">
+            {isConnected && (
+              <button onClick={() => setShowPayLink(true)}
+                className="px-3 py-2 rounded-xl text-xs font-bold tracking-wider transition-all hover:scale-105"
+                style={{ background: 'rgba(232,65,66,.08)', border: '1px solid rgba(232,65,66,.15)', color: '#E84142' }}>
+                🔗 Pay Link
+              </button>
+            )}
+            <button onClick={() => setShowSettings(true)}
+              className="w-9 h-9 rounded-xl flex items-center justify-center text-gray-500 hover:text-white transition-colors"
+              style={{ background: 'rgba(255,255,255,.04)', border: '1px solid rgba(255,255,255,.06)' }}>
+              ⚙️
             </button>
-          ) : (
-            <button onClick={() => setShowModal(true)}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl transition-all hover:scale-[1.02]"
-              style={{ background:'rgba(0,212,255,.07)', border:'1px solid rgba(0,212,255,.2)' }}>
-              <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-              <span className="text-xs text-white font-mono">{address?.slice(0,6)}…{address?.slice(-4)}</span>
-            </button>
-          )}
+            {!isConnected ? (
+              <button onClick={() => setShowModal(true)}
+                className="px-5 py-2.5 rounded-xl font-black text-xs tracking-widest uppercase transition-all hover:scale-105"
+                style={{ background:'linear-gradient(135deg,#E84142,#C73536)', color:'#fff', fontFamily:"'Orbitron',sans-serif", boxShadow:'0 0 20px rgba(232,65,66,.3)' }}>
+                Connect Wallet
+              </button>
+            ) : (
+              <button onClick={() => setShowModal(true)}
+                className="flex items-center gap-2 px-4 py-2.5 rounded-xl transition-all hover:scale-[1.02]"
+                style={{ background:'rgba(232,65,66,.07)', border:'1px solid rgba(232,65,66,.2)' }}>
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span className="text-xs text-white font-mono">{address?.slice(0,6)}…{address?.slice(-4)}</span>
+              </button>
+            )}
+          </div>
         </nav>
 
         <StatsTicker prices={prices} />
-        <Hero onConnect={() => setShowModal(true)} />
 
         {isConnected ? (
-          <div className="mt-10 grid grid-cols-1 lg:grid-cols-5 gap-5">
-            <div className="lg:col-span-2 space-y-4">
-              <WalletInfoCard />
-              <NetworkSwitcher />
+          <>
+            {/* ─── Connected: Split Panel Layout ─────────────────────────────────── */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 mt-4">
+              {/* Left: AI Chat */}
+              <div>
+                <AIAssistantPanel onIntent={handleIntent} isConnected={isConnected} />
+              </div>
+
+              {/* Right: Swap + Info */}
+              <div className="space-y-4">
+                <SwapInterface aiIntent={aiIntent} prices={prices} onSwapComplete={handleSwapComplete} />
+                <AIInsightsBar />
+              </div>
             </div>
-            <div className="lg:col-span-3 space-y-4">
-              <SwapInterface />
-              <Portfolio address={address} prices={prices} />
+
+            {/* Dashboard Stats */}
+            <div className="mt-6">
+              <DashboardStats txHistory={txHistory} />
             </div>
-          </div>
+
+            {/* Bottom: Portfolio + Activity */}
+            <div className="mt-5 grid grid-cols-1 lg:grid-cols-2 gap-5">
+              <div className="space-y-4">
+                <WalletInfoCard />
+                <NetworkSwitcher />
+              </div>
+              <div className="space-y-4">
+                <RecentActivity txHistory={txHistory} chainId={chainId} />
+                <Portfolio address={address} prices={prices} />
+              </div>
+            </div>
+          </>
         ) : (
-          <div className="mt-16 grid grid-cols-1 md:grid-cols-3 gap-5">
-            {[
-              { icon:'⚡', title:'Instant Swaps',      desc:'Trade tokens at the best rates via Uniswap V2 with minimal slippage and full on-chain settlement.' },
-              { icon:'🔐', title:'Non-Custodial',       desc:'Your keys, your crypto. We never hold your assets — every transaction is signed locally in your wallet.' },
-              { icon:'📊', title:'Live Portfolio',      desc:'Monitor real-time token balances, 24h price changes and USD values across your entire DeFi portfolio.' },
-            ].map((c, i) => <FeatureCard key={i} {...c} index={i} />)}
-          </div>
+          <>
+            {/* ─── Not Connected: Landing Page ──────────────────────────────────── */}
+            <Hero onConnect={() => setShowModal(true)} />
+
+            <div className="mt-16 grid grid-cols-1 md:grid-cols-3 gap-5">
+              {[
+                { icon:'🤖', title:'AI-Powered Swaps',     desc:'Tell our AI what you need in plain English. "Swap 50 USDC to AVAX" — and it handles the rest. No manual token selection needed.' },
+                { icon:'⚡', title:'Instant on Avalanche',  desc:'Sub-second finality and near-zero gas fees. Your swaps and payments execute faster than any other blockchain.' },
+                { icon:'🔗', title:'Smart Payment Links',   desc:'Create shareable payment links. Anyone can open the link and complete the payment in one click. Perfect for invoices and requests.' },
+              ].map((c, i) => <FeatureCard key={i} {...c} index={i} />)}
+            </div>
+
+            <HowItWorks />
+            <WhyAvalanche />
+            <SupportedTokens />
+
+            {/* Footer */}
+            <div className="text-center py-10 border-t" style={{ borderColor: 'rgba(255,255,255,.06)' }}>
+              <p className="text-gray-600 text-xs">
+                Built for the Team1 Avalanche Speedrun Hackathon • AgentSwap AI © {new Date().getFullYear()}
+              </p>
+              <p className="text-gray-700 text-xs mt-1">
+                Powered by Avalanche • Trader Joe • Google Gemini
+              </p>
+            </div>
+          </>
         )}
       </div>
 
       {showModal && <ConnectModal onClose={() => setShowModal(false)} />}
+      {showSettings && <SettingsModal onClose={() => setShowSettings(false)} />}
+      {showPayLink && <PaymentLinkModal onClose={() => setShowPayLink(false)} />}
     </div>
   )
 }
